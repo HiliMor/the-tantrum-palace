@@ -394,7 +394,10 @@ const sound = {
   ctx: null, enabled: true, osc: null, gain: null,
   init() {
     if (this.ctx) return;
-    const ac = new AudioContext();
+    // iOS mutes Web Audio when the ringer switch is on silent unless the page
+    // declares itself as media playback.
+    if (navigator.audioSession) navigator.audioSession.type = 'playback';
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
     this.ctx = ac;
     const osc = ac.createOscillator();
     osc.type = 'sawtooth';
@@ -424,6 +427,13 @@ const sound = {
     vib.start();
     this.osc = osc;
     this.gain = out;
+  },
+  // Mobile browsers only allow audio to start inside a gesture that counts as
+  // user activation (on touch that is pointerup/touchend, not pointerdown), and
+  // suspend the context again when the tab is backgrounded.
+  unlock() {
+    this.init();
+    if (this.ctx.state !== 'running') this.ctx.resume().catch(() => {});
   },
   update(tantrum, t) {
     if (!this.ctx) return;
@@ -563,6 +573,12 @@ canvas.addEventListener('pointerdown', (e) => {
   startTantrum();
 });
 window.addEventListener('pointerup', stopTantrum);
+for (const type of ['pointerdown', 'pointerup', 'touchend', 'click', 'keydown']) {
+  window.addEventListener(type, () => sound.unlock(), { capture: true, passive: true });
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && sound.ctx) sound.ctx.resume().catch(() => {});
+});
 window.addEventListener('pointercancel', stopTantrum);
 document.addEventListener('pointerleave', () => { state.lastMove = -10; });
 
