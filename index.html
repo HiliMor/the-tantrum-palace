@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Tantrum Palace</title>
+  <meta name="description" content="An interactive meltdown. A WebGPU dollhouse drowning in feelings." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Rubik+Wet+Paint&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div id="loader">
+    <div class="loader-drop"></div>
+    <p>loading feelings<span class="dots"></span></p>
+  </div>
+
+  <header class="title">
+    <h1 data-text="TANTRUM PALACE">TANTRUM<br />PALACE</h1>
+    <p class="sub">an interactive meltdown &middot; est. bedtime</p>
+    <p class="hint"><b>hover</b> to melt the palace<br /><b>hold</b> anywhere to throw a fit<br /><b>space</b> tantrum &middot; <b>P</b> pacifier</p>
+  </header>
+
+  <aside class="hud">
+    <div class="stat">
+      <span class="label">tears shed</span>
+      <span class="value"><span id="liters">0.00</span><small> L</small></span>
+    </div>
+    <div class="stat">
+      <span class="label">flood level</span>
+      <div class="bar"><div id="flood"></div></div>
+    </div>
+    <div class="stat">
+      <span class="label">mood</span>
+      <span class="value mood" id="mood">mildly inconsolable</span>
+    </div>
+    <div class="stat">
+      <span class="label">palaces drowned</span>
+      <span class="value" id="drowned">0</span>
+    </div>
+  </aside>
+
+  <nav class="controls">
+    <button id="btn-tantrum" class="btn hot">hold to tantrum</button>
+    <button id="btn-pacifier" class="btn">🍼 pacifier</button>
+    <button id="btn-scream" class="btn">🎤 scream mode</button>
+    <button id="btn-sound" class="btn icon" aria-label="toggle sound">🔊</button>
+  </nav>
+
+  <div id="wahs"></div>
+  <div id="drown-banner"><span>THE PALACE HAS<br />DROWNED IN FEELINGS</span></div>
+  <div id="badge"></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
