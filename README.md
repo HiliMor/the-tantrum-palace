@@ -41,7 +41,7 @@ Press **🎪 pop-up** (or **D**) and the painting folds flat, then unfolds like 
 **[🔊 Watch the diorama demo with sound](media/diorama.mp4)** &nbsp;·&nbsp; **[Open it straight in pop-up mode](https://hilimor.github.io/the-tantrum-palace/?diorama)**
 </div>
 
-The painting is still made of the original pixels, so from the front it looks exactly as painted. The depth comes from a **Depth Anything V2** map of the artwork, generated once offline and shipped as `public/depth.png`. It's partly snapped into terraces so the layers read like thick cardboard cut-outs. Wherever the depth drops sharply (the house outline, the edge of the face), extra shaded particles fill in the side walls, so the pieces look solid when you orbit.
+The painting is still made of the original pixels, so from the front it looks exactly as painted. The depth comes from a **Depth Anything V2** map of the artwork, generated once offline and shipped as `public/depth.png`. The map blurs object boundaries into ramps, so edges are sharpened: where the depth changes steeply within a few pixels (the house outline, the chin), it snaps into a clean cliff. Smooth areas like the cheeks stay round. At each cliff, extra shaded particles fill in the side wall, so the cut-outs look solid when you orbit.
 
 ## How to play
 

@@ -137,8 +137,11 @@ for (let i = 0; i < 256; i++) {
   toLinear[i] = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
 }
 
-// Diorama depth: the AI depth, partly snapped into terraces so the layers read
-// like thick cardboard cut-outs.
+// Diorama depth: the AI depth map, with object edges sharpened. The map blurs
+// boundaries into ramps; where the depth range in a small window is large
+// (house outline, chin) each pixel snaps to the near or far side, making a clean
+// cliff that gets a side wall below. Smooth areas like the cheeks are untouched,
+// so round shapes don't turn into stairs.
 const DIO_DEPTH = 5.2;
 const dioZ = new Float32Array(COLS * ROWS);
 const depth01 = new Float32Array(COLS * ROWS);
@@ -148,11 +151,31 @@ const depth01 = new Float32Array(COLS * ROWS);
     lo = Math.min(lo, depthPx[i * 4]);
     hi = Math.max(hi, depthPx[i * 4]);
   }
-  for (let i = 0; i < COLS * ROWS; i++) {
-    const d = (depthPx[i * 4] - lo) / Math.max(1, hi - lo);
-    const terraced = d + (Math.round(d * 7) / 7 - d) * 0.6;
-    depth01[i] = d;
-    dioZ[i] = (terraced - 0.35) * DIO_DEPTH;
+  for (let i = 0; i < COLS * ROWS; i++) depth01[i] = (depthPx[i * 4] - lo) / Math.max(1, hi - lo);
+  const R = 3;
+  const EDGE = 0.07;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const i = r * COLS + c;
+      let mn = 1, mxd = 0;
+      for (let dr = -R; dr <= R; dr++) {
+        const rr = r + dr;
+        if (rr < 0 || rr >= ROWS) continue;
+        for (let dc = -R; dc <= R; dc++) {
+          const cc = c + dc;
+          if (cc < 0 || cc >= COLS) continue;
+          const v = depth01[rr * COLS + cc];
+          if (v < mn) mn = v;
+          if (v > mxd) mxd = v;
+        }
+      }
+      let d = depth01[i];
+      if (mxd - mn > EDGE) {
+        const snapped = d - mn < mxd - d ? mn : mxd;
+        d += (snapped - d) * smooth(EDGE, EDGE * 2, mxd - mn);
+      }
+      dioZ[i] = (d - 0.35) * DIO_DEPTH;
+    }
   }
 }
 const dioZAt = (u, v) => dioZ[Math.min(ROWS - 1, (v * ROWS) | 0) * COLS + Math.min(COLS - 1, (u * COLS) | 0)];
