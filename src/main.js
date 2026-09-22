@@ -108,7 +108,7 @@ const uMouth = uniform(new THREE.Vector3(mx, my, 1));
 // ---------------------------------------------------------------------------
 // Painting → GPU particles
 // ---------------------------------------------------------------------------
-const img = await loadImage('/painting.jpg');
+const img = await loadImage(`${import.meta.env.BASE_URL}painting.jpg`);
 const COLS = isWebGPU ? 360 : 200;
 const ROWS = Math.round(COLS / IMG_ASPECT);
 const COUNT = COLS * ROWS;
@@ -381,7 +381,9 @@ const pipeline = new THREE.RenderPipeline(renderer);
   pipeline.userData = { bloomPass };
   const shifted = rgbShift(sceneColor.add(bloomPass), uShift, uTime.mul(3.0));
   const vig = smoothstep(1.15, 0.35, screenUV.sub(0.5).mul(vec2(1.2, 1.0)).length());
-  const grain = mx_noise_float(vec3(screenUV.mul(900.0), uTime.mul(40.0))).mul(0.02);
+  // Grain is off in ?demo: it makes the recorded video huge.
+  const grainAmt = new URLSearchParams(location.search).has('demo') ? 0 : 0.02;
+  const grain = mx_noise_float(vec3(screenUV.mul(900.0), uTime.mul(40.0))).mul(grainAmt);
   pipeline.outputNode = vec4(shifted.rgb.mul(mix(0.45, 1.0, vig)).add(grain), 1.0);
 }
 
@@ -414,8 +416,10 @@ const sound = {
       lvl.gain.value = g;
       osc.connect(bp).connect(lvl).connect(out);
     });
+    this.master = ac.createGain();
+    this.master.connect(ac.destination);
     const comp = ac.createDynamicsCompressor();
-    out.connect(comp).connect(ac.destination);
+    out.connect(comp).connect(this.master);
     osc.start();
     vib.start();
     this.osc = osc;
@@ -429,7 +433,9 @@ const sound = {
     const wail = cyc < 0.7 ? Math.sin((cyc / 0.7) * Math.PI) : Math.sin(((cyc - 0.7) / 0.3) * Math.PI) * 0.5;
     const f = 360 + wail * 260 + tantrum * 140;
     this.osc.frequency.setTargetAtTime(f, now, 0.04);
-    const vol = this.enabled ? Math.max(0, tantrum - 0.05) * (0.25 + wail * 0.75) * 0.9 : 0;
+    // Between fits: a quiet, hiccuping whimper.
+    const whimper = Math.pow(Math.max(0, Math.sin(t * 2.6)), 10) * 0.07 * (1 - tantrum) * (this.calm ? 0 : 1);
+    const vol = this.enabled ? Math.max(0, tantrum - 0.05) * (0.25 + wail * 0.75) * 0.9 + whimper : 0;
     this.gain.gain.setTargetAtTime(vol, now, 0.05);
   },
   shh() {
@@ -446,8 +452,27 @@ const sound = {
     hp.frequency.value = 3000;
     const g = ac.createGain();
     g.gain.value = 0.18;
-    src.connect(hp).connect(g).connect(ac.destination);
+    src.connect(hp).connect(g).connect(this.master);
     src.start();
+  },
+  glug() {
+    if (!this.ctx || !this.enabled) return;
+    const ac = this.ctx;
+    const t0 = ac.currentTime;
+    for (let i = 0; i < 9; i++) {
+      const o = ac.createOscillator();
+      const g = ac.createGain();
+      const t = t0 + i * 0.13 + Math.random() * 0.05;
+      o.type = 'sine';
+      o.frequency.setValueAtTime(180 + Math.random() * 260, t);
+      o.frequency.exponentialRampToValueAtTime(700 + Math.random() * 500, t + 0.09);
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.25, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+      o.connect(g).connect(this.master);
+      o.start(t);
+      o.stop(t + 0.15);
+    }
   },
 };
 
@@ -623,6 +648,37 @@ window.addEventListener('resize', resize);
 resize();
 
 // ---------------------------------------------------------------------------
+// ?demo: a scripted performance, used to record the showreel
+// ---------------------------------------------------------------------------
+const DEMO = new URLSearchParams(location.search).has('demo');
+const DEMO_LENGTH = 26;
+let floodBoost = 1;
+
+function runDemo(t, now) {
+  const hover = (x, y) => { state.pointer.set(x, y); state.lastMove = now; };
+  const melt = (k) => hover(Math.sin(k * 1.3) * 0.2, Math.sin(k * 0.9) * 0.45 - 0.15);
+  const hold = (on) => (on ? startTantrum() : stopTantrum());
+
+  if (t < 3.2) state.pointer.set(0.35 * Math.sin(t * 0.4), 0.1);
+  else if (t < 7.5) melt(t - 3.2);
+  else if (t < 10) { hold(true); hover(Math.sin(t * 2) * 0.15, 0.2); }
+  else if (t < 12.5) { hold(false); state.lastMove = -10; }
+  else if (t < 20) { floodBoost = 2.4; hold(state.drowned === 0); hover(Math.sin(t * 1.7) * 0.12, 0.1); }
+  else if (t < 21.5) { floodBoost = 1; hold(false); }
+  else if (t < DEMO_LENGTH) {
+    if (!demoPacified) { pacify(); demoPacified = true; }
+    melt(t);
+  } else window.__demoDone = true;
+}
+let demoPacified = false;
+
+if (DEMO) {
+  sound.init();
+  window.__sound = sound;
+  window.__demoLength = DEMO_LENGTH;
+}
+
+// ---------------------------------------------------------------------------
 // Loop
 // ---------------------------------------------------------------------------
 const timer = new THREE.Timer();
@@ -638,6 +694,7 @@ renderer.setAnimationLoop(() => {
   elapsed += dt;
   frame++;
   const now = performance.now() / 1000;
+  if (DEMO) runDemo(elapsed, now);
 
   // Tantrum level: button / space / pointer hold, or a real scream.
   const micLevel = mic.read();
@@ -655,7 +712,7 @@ renderer.setAnimationLoop(() => {
   } else if (state.calm > 0) {
     state.water -= dt * 1.8;
   } else {
-    state.water += dt * (0.03 + state.tantrum * 0.6);
+    state.water += dt * (0.03 + state.tantrum * 0.6) * floodBoost;
   }
   state.water = Math.max(state.water, BOTTOM - 0.4);
   const cryRate = state.calm > 0 ? 0.01 : 0.08 + state.tantrum * 2.8;
@@ -665,6 +722,7 @@ renderer.setAnimationLoop(() => {
     state.drowned++;
     state.draining = 3.2;
     ui.banner.classList.add('show');
+    sound.glug();
     setTimeout(() => ui.banner.classList.remove('show'), 2600);
     uBlast.value = 30;
   }
@@ -716,6 +774,7 @@ renderer.setAnimationLoop(() => {
     spawnWah(state.tantrum);
     state.wahTimer = 0.28 - state.tantrum * 0.18;
   }
+  sound.calm = state.calm > 0;
   sound.update(state.tantrum, elapsed);
 
   // HUD.
