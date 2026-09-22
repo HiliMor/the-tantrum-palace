@@ -82,4 +82,6 @@ media/              demo video, GIF and stills
 
 ## Credits
 
+Made with tears by **2ghoul4skool** & **Hili**.
+
 Built with [three.js](https://threejs.org) (WebGPU renderer + TSL) and [Vite](https://vite.dev). Type: *Rubik Wet Paint* and *Space Mono* from Google Fonts.
