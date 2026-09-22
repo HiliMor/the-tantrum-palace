@@ -29,6 +29,20 @@ The painting already looks mid-meltdown: tears running down, paint dripping off 
 | <img src="media/calm.jpg" width="220"/> | <img src="media/tantrum.jpg" width="220"/> | <img src="media/flood.jpg" width="220"/> | <img src="media/drowned.jpg" width="220"/> |
 | The painting, rebuilt from particles, sobbing gently | Paint blasts out of the mouth, tears go full lawn-sprinkler | Everything underwater turns blue and wobbly. Rubber ducks arrive | *"The palace has drowned in feelings."* |
 
+## 🎪 Pop-up diorama mode
+
+Press **🎪 pop-up** (or **D**) and the painting folds flat, then unfolds like a pop-up book. The background stands up first, then the dollhouse, then the face. Move the mouse and the camera swings around a real 3D diorama.
+
+<div align="center">
+<img src="media/diorama.gif" alt="Pop-up diorama mode: the painting unfolds into 3D layers and the camera swings around it" width="420" />
+&nbsp;
+<img src="media/diorama.jpg" alt="Side view of the diorama: the face juts out over the dollhouse" width="420" />
+
+**[🔊 Watch the diorama demo with sound](media/diorama.mp4)** &nbsp;·&nbsp; **[Open it straight in pop-up mode](https://hilimor.github.io/the-tantrum-palace/?diorama)**
+</div>
+
+The painting is still made of the original pixels, so from the front it looks exactly as painted. The depth comes from a **Depth Anything V2** map of the artwork, generated once offline and shipped as `public/depth.png`. It's partly snapped into terraces so the layers read like thick cardboard cut-outs. Wherever the depth drops sharply (the house outline, the edge of the face), extra shaded particles fill in the side walls, so the pieces look solid when you orbit.
+
 ## How to play
 
 | Input | What happens |
@@ -36,6 +50,7 @@ The painting already looks mid-meltdown: tears running down, paint dripping off 
 | **Hover** | The paint melts and drips under your cursor, then crawls back home |
 | **Hold** mouse / **Space** | Tantrum: shock-wave from the mouth, head-shaking, screen shake, chromatic split, synthesized *WAAAH* |
 | **🍼 Pacifier** / **P** | *"shhh"*: the flood drains and the kid is soothed (temporarily) |
+| **🎪 Pop-up** / **D** | Toggle the 3D pop-up diorama |
 | **🎤 Scream mode** | Uses your microphone: actually scream at your computer to feed the tantrum |
 
 The HUD keeps score: litres of tears shed, flood level, current mood (*mildly inconsolable → escalating → ☢ nuclear ☢ → glub glub*), and palaces drowned.
@@ -68,7 +83,7 @@ npm run dev
 
 Open the printed URL in a browser with **WebGPU** (Chrome, Edge, Safari 26+). Other browsers fall back to WebGL2 with fewer particles.
 
-Add **`?demo`** to the URL to watch the scripted ~26 s performance that was used to record the showreel.
+URL options: **`?diorama`** starts in pop-up mode. **`?demo`** plays the scripted ~26 s showreel performance, and **`?demo&diorama`** plays the diorama one.
 
 ## Project structure
 
@@ -77,6 +92,7 @@ index.html          page shell, HUD and controls
 src/main.js         scene, compute shaders, post-processing, audio, interaction
 src/style.css       dripping typography, HUD, WAAAH animations
 public/painting.jpg the source artwork
+public/depth.png    Depth Anything V2 depth map of the artwork
 media/              demo video, GIF and stills
 ```
 

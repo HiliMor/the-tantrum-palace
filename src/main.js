@@ -101,6 +101,8 @@ const uAssemble = uniform(0);
 const uWater = uniform(BOTTOM - 0.4);
 const uSpawn = uniform(0);
 const uSeed = uniform(0);
+const uDiorama = uniform(0); // 0 = flat painting, 1 = pop-up diorama
+const uUnfold = uniform(1); // pop-up animation progress
 
 const [mx, my] = uvToWorld(...LANDMARKS.mouth);
 const uMouth = uniform(new THREE.Vector3(mx, my, 1));
@@ -108,19 +110,26 @@ const uMouth = uniform(new THREE.Vector3(mx, my, 1));
 // ---------------------------------------------------------------------------
 // Painting → GPU particles
 // ---------------------------------------------------------------------------
-const img = await loadImage(`${import.meta.env.BASE_URL}painting.jpg`);
+const [img, depthImg] = await Promise.all([
+  loadImage(`${import.meta.env.BASE_URL}painting.jpg`),
+  loadImage(`${import.meta.env.BASE_URL}depth.png`),
+]);
 const COLS = isWebGPU ? 360 : 200;
 const ROWS = Math.round(COLS / IMG_ASPECT);
-const COUNT = COLS * ROWS;
 const SPACING = W / COLS;
 
-const cvs = document.createElement('canvas');
-cvs.width = COLS;
-cvs.height = ROWS;
-const ctx = cvs.getContext('2d', { willReadFrequently: true });
-ctx.imageSmoothingQuality = 'high';
-ctx.drawImage(img, 0, 0, COLS, ROWS);
-const pixels = ctx.getImageData(0, 0, COLS, ROWS).data;
+function sampleImage(image) {
+  const cvs = document.createElement('canvas');
+  cvs.width = COLS;
+  cvs.height = ROWS;
+  const ctx = cvs.getContext('2d', { willReadFrequently: true });
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(image, 0, 0, COLS, ROWS);
+  return ctx.getImageData(0, 0, COLS, ROWS).data;
+}
+const pixels = sampleImage(img);
+// Depth Anything V2 map of the painting (brighter = closer), precomputed offline.
+const depthPx = sampleImage(depthImg);
 
 const toLinear = new Float32Array(256);
 for (let i = 0; i < 256; i++) {
@@ -128,38 +137,86 @@ for (let i = 0; i < 256; i++) {
   toLinear[i] = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
 }
 
-const pHome = instancedArray(COUNT, 'vec4'); // xyz home, w random
+// Diorama depth: the AI depth, partly snapped into terraces so the layers read
+// like thick cardboard cut-outs.
+const DIO_DEPTH = 5.2;
+const dioZ = new Float32Array(COLS * ROWS);
+const depth01 = new Float32Array(COLS * ROWS);
+{
+  let lo = 255, hi = 0;
+  for (let i = 0; i < COLS * ROWS; i++) {
+    lo = Math.min(lo, depthPx[i * 4]);
+    hi = Math.max(hi, depthPx[i * 4]);
+  }
+  for (let i = 0; i < COLS * ROWS; i++) {
+    const d = (depthPx[i * 4] - lo) / Math.max(1, hi - lo);
+    const terraced = d + (Math.round(d * 7) / 7 - d) * 0.6;
+    depth01[i] = d;
+    dioZ[i] = (terraced - 0.35) * DIO_DEPTH;
+  }
+}
+const dioZAt = (u, v) => dioZ[Math.min(ROWS - 1, (v * ROWS) | 0) * COLS + Math.min(COLS - 1, (u * COLS) | 0)];
+
+// One particle per pixel, plus "side wall" particles wherever the diorama depth
+// drops sharply, so cut-outs look solid instead of paper-thin from the side.
+const homes = [];
+const colors = [];
+const dios = [];
+for (let r = 0; r < ROWS; r++) {
+  for (let c = 0; c < COLS; c++) {
+    const i = r * COLS + c;
+    const u = (c + 0.5) / COLS;
+    const v = (r + 0.5) / ROWS;
+    const R = pixels[i * 4], G = pixels[i * 4 + 1], B = pixels[i * 4 + 2];
+    const [x, y] = uvToWorld(u, v);
+    const z = depthAt(u, v, R / 255, G / 255, B / 255);
+    const mask = faceMask(u, v);
+    const lin = [toLinear[R], toLinear[G], toLinear[B]];
+    homes.push(x, y, z, Math.random());
+    colors.push(...lin, mask);
+    dios.push(dioZ[i], 0, depth01[i], 0);
+
+    let floor = dioZ[i];
+    if (c > 0) floor = Math.min(floor, dioZ[i - 1]);
+    if (c < COLS - 1) floor = Math.min(floor, dioZ[i + 1]);
+    if (r > 0) floor = Math.min(floor, dioZ[i - COLS]);
+    if (r < ROWS - 1) floor = Math.min(floor, dioZ[i + COLS]);
+    const drop = dioZ[i] - floor;
+    if (drop > SPACING * 2.5) {
+      const slices = Math.min(40, Math.floor(drop / (SPACING * 1.2)));
+      for (let k = 1; k <= slices; k++) {
+        const shade = 0.42 + 0.18 * (1 - k / slices);
+        homes.push(x, y, z - 0.002, Math.random());
+        colors.push(lin[0] * shade, lin[1] * shade, lin[2] * shade, mask);
+        dios.push(dioZ[i] - (drop * k) / (slices + 1), 1, depth01[i], 0);
+      }
+    }
+  }
+}
+const COUNT = homes.length / 4;
+
+const pHome = instancedArray(COUNT, 'vec4'); // xyz flat home, w random
 const pPos = instancedArray(COUNT, 'vec4');
 const pVel = instancedArray(COUNT, 'vec4');
 const pCol = instancedArray(COUNT, 'vec4'); // rgb linear, w face mask
+const pDio = instancedArray(COUNT, 'vec4'); // x diorama z, y side-wall flag, z depth 0..1
 
+pHome.value.array.set(homes);
+pCol.value.array.set(colors);
+pDio.value.array.set(dios);
 {
-  const home = pHome.value.array;
+  // Start as an exploded nebula; the springs pull it together on load.
   const pos = pPos.value.array;
-  const col = pCol.value.array;
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      const i = r * COLS + c;
-      const u = (c + 0.5) / COLS;
-      const v = (r + 0.5) / ROWS;
-      const R = pixels[i * 4], G = pixels[i * 4 + 1], B = pixels[i * 4 + 2];
-      const [x, y] = uvToWorld(u, v);
-      const z = depthAt(u, v, R / 255, G / 255, B / 255);
-      const rnd = Math.random();
-      home.set([x, y, z, rnd], i * 4);
-      col.set([toLinear[R], toLinear[G], toLinear[B], faceMask(u, v)], i * 4);
-
-      // Start as an exploded nebula; the springs pull it together on load.
-      const th = Math.random() * Math.PI * 2;
-      const ph = Math.acos(2 * Math.random() - 1);
-      const rad = 14 + Math.random() * 30;
-      pos.set([
-        Math.sin(ph) * Math.cos(th) * rad,
-        Math.sin(ph) * Math.sin(th) * rad,
-        Math.cos(ph) * rad - 10,
-        1,
-      ], i * 4);
-    }
+  for (let i = 0; i < COUNT; i++) {
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    const rad = 14 + Math.random() * 30;
+    pos.set([
+      Math.sin(ph) * Math.cos(th) * rad,
+      Math.sin(ph) * Math.sin(th) * rad,
+      Math.cos(ph) * rad - 10,
+      1,
+    ], i * 4);
   }
 }
 
@@ -178,7 +235,15 @@ const paintUpdate = Fn(() => {
   const sobSpeed = mix(5.0, 17.0, uTantrum);
   const sob = sin(uTime.mul(sobSpeed)).mul(mix(0.025, 0.07, uTantrum));
   const headShake = sin(uTime.mul(23.0)).mul(0.14).mul(uTantrum);
-  const target = home.xyz.add(vec3(headShake, sob, sob.mul(0.5)).mul(mask));
+  // Diorama: swap in the AI depth, then unfold like a pop-up book, hinged at
+  // the bottom edge. Far layers stand up first, the face pops up last.
+  const dio = pDio.element(instanceIndex);
+  const z = mix(home.z, dio.x, uDiorama);
+  const up = smoothstep(0.0, 1.0, clamp(uUnfold.mul(1.8).sub(dio.z.mul(0.8)), 0.0, 1.0));
+  const ang = float(1.0).sub(up).mul(Math.PI / 2).mul(uDiorama);
+  const lift = home.y.sub(BOTTOM);
+  const unfolded = vec3(home.x, lift.mul(cos(ang)).add(BOTTOM), z.sub(lift.mul(sin(ang))));
+  const target = unfolded.add(vec3(headShake, sob, sob.mul(0.5)).mul(mask));
 
   // Spring home (weak while assembling or throwing a fit).
   const k = mix(20.0, 4.5, uTantrum).mul(mix(0.5, 1.5, rnd)).mul(uAssemble);
@@ -224,13 +289,14 @@ const paintMat = new THREE.SpriteNodeMaterial();
   const speed = pVel.toAttribute().xyz.length();
   const base = pCol.toAttribute().xyz;
   const under = smoothstep(uWater.add(0.05), uWater.sub(0.35), pos.y);
-  const glow = smoothstep(0.6, 7.0, speed);
+  const glow = smoothstep(2.0, 9.0, speed);
 
   const wet = mix(base, base.mul(vec3(0.5, 0.78, 1.35)).add(vec3(0.0, 0.03, 0.09)), under.mul(0.75));
   const hot = wet.mul(1.6).add(vec3(0.5, 0.06, 0.2).mul(glow));
   paintMat.positionNode = pos.xyz;
   paintMat.colorNode = varying(mix(wet, hot, glow));
-  paintMat.scaleNode = float(SPACING * 1.6).mul(mix(1.0, 0.5, glow));
+  const wall = pDio.toAttribute().y;
+  paintMat.scaleNode = float(SPACING * 1.6).mul(mix(1.0, 0.5, glow)).mul(mix(1.0, uDiorama, wall));
 }
 const painting = new THREE.Sprite(paintMat);
 painting.count = COUNT;
@@ -248,6 +314,13 @@ const eyeL = uvToWorld(...LANDMARKS.eyeL);
 const eyeR = uvToWorld(...LANDMARKS.eyeR);
 const uEyeL = uniform(new THREE.Vector3(eyeL[0], eyeL[1], 1.05));
 const uEyeR = uniform(new THREE.Vector3(eyeR[0], eyeR[1], 0.95));
+// Face landmarks move forward with the face in diorama mode.
+const FLAT_Z = { eyeL: 1.05, eyeR: 0.95, mouth: 1 };
+const DIO_Z = {
+  eyeL: dioZAt(...LANDMARKS.eyeL) + 0.1,
+  eyeR: dioZAt(...LANDMARKS.eyeR) + 0.1,
+  mouth: dioZAt(...LANDMARKS.mouth) + 0.1,
+};
 
 const tearUpdate = Fn(() => {
   const pos = tPos.element(instanceIndex);
@@ -531,6 +604,9 @@ const state = {
   lastMove: -10,
   wahTimer: 0,
   micWasLoud: false,
+  dio: 0,
+  dioTarget: 0,
+  unfold: 1,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -589,6 +665,16 @@ $('btn-sound').addEventListener('click', (e) => {
   sound.enabled = !sound.enabled;
   e.currentTarget.textContent = sound.enabled ? '🔊' : '🔇';
 });
+// Diorama mode: fold everything flat, then pop it up in depth.
+const dioBtn = $('btn-diorama');
+function toggleDiorama(on = state.dioTarget === 0) {
+  state.dioTarget = on ? 1 : 0;
+  if (on) state.unfold = 0;
+  dioBtn.classList.toggle('on', on);
+  dioBtn.textContent = on ? '🖼 flatten' : '🎪 pop-up';
+}
+dioBtn.addEventListener('click', () => toggleDiorama());
+
 $('btn-scream').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
   if (mic.analyser) {
@@ -609,6 +695,7 @@ $('btn-scream').addEventListener('click', async (e) => {
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space' && !e.repeat) { e.preventDefault(); startTantrum(); }
   if (e.code === 'KeyP') pacify();
+  if (e.code === 'KeyD') toggleDiorama();
 });
 window.addEventListener('keyup', (e) => { if (e.code === 'Space') stopTantrum(); });
 
@@ -667,8 +754,20 @@ resize();
 // ?demo: a scripted performance, used to record the showreel
 // ---------------------------------------------------------------------------
 const DEMO = new URLSearchParams(location.search).has('demo');
+const DIORAMA_ON_LOAD = new URLSearchParams(location.search).has('diorama');
 const DEMO_LENGTH = 26;
 let floodBoost = 1;
+
+// Shorter showreel for the pop-up diorama (?demo&diorama).
+const DIORAMA_DEMO_LENGTH = 17;
+function runDioramaDemo(t, now) {
+  const look = (x, y) => { state.pointer.set(x, y); state.lastMove = -10; };
+  if (t < 6.5) look(0, 0.05);
+  else if (t < 12) look(Math.sin((t - 6.5) * 0.9) * 0.95, 0.15 + Math.sin(t * 0.6) * 0.2);
+  else if (t < 14.5) { startTantrum(); look(0.55, 0.1); }
+  else if (t < DIORAMA_DEMO_LENGTH) { stopTantrum(); look(0.3, 0); }
+  else window.__demoDone = true;
+}
 
 function runDemo(t, now) {
   const hover = (x, y) => { state.pointer.set(x, y); state.lastMove = now; };
@@ -710,7 +809,7 @@ renderer.setAnimationLoop(() => {
   elapsed += dt;
   frame++;
   const now = performance.now() / 1000;
-  if (DEMO) runDemo(elapsed, now);
+  if (DEMO) (DIORAMA_ON_LOAD ? runDioramaDemo : runDemo)(elapsed, now);
 
   // Tantrum level: button / space / pointer hold, or a real scream.
   const micLevel = mic.read();
@@ -749,15 +848,29 @@ renderer.setAnimationLoop(() => {
   raycaster.setFromCamera(state.pointer, camera);
   if (raycaster.ray.intersectPlane(hitPlane, hit)) uMouse.value.copy(hit);
 
-  // Camera: parallax + tantrum shake.
+  // Diorama transition.
+  if (DIORAMA_ON_LOAD && elapsed > 2.6 && !state.dioAuto) { state.dioAuto = true; toggleDiorama(true); }
+  state.dio += (state.dioTarget - state.dio) * (1 - Math.exp(-dt * (state.dioTarget ? 12 : 3)));
+  if (state.dioTarget) state.unfold = Math.min(1, state.unfold + dt * 0.42);
+  for (const k of ['eyeL', 'eyeR']) {
+    const u = k === 'eyeL' ? uEyeL : uEyeR;
+    u.value.z = THREE.MathUtils.lerp(FLAT_Z[k], DIO_Z[k], state.dio * state.unfold);
+  }
+  uMouth.value.z = THREE.MathUtils.lerp(FLAT_Z.mouth, DIO_Z.mouth, state.dio * state.unfold);
+  hitPlane.constant = -THREE.MathUtils.lerp(0.6, 1.4, state.dio);
+
+  // Camera: orbit with the pointer (much wider in diorama mode) + tantrum shake.
   smoothPtr.lerp(state.pointer, 1 - Math.exp(-dt * 3));
   const shake = state.tantrum * 0.09;
+  const yaw = smoothPtr.x * THREE.MathUtils.lerp(0.08, 0.75, state.dio) + Math.sin(elapsed * 0.25) * 0.12 * state.dio;
+  const pitch = smoothPtr.y * THREE.MathUtils.lerp(0.05, 0.3, state.dio) + Math.sin(elapsed * 0.4) * 0.008 + 0.1 * state.dio;
+  const focusZ = 0.8 * state.dio;
   camera.position.set(
-    smoothPtr.x * 1.6 + (Math.random() - 0.5) * shake,
-    smoothPtr.y * 1.0 + Math.sin(elapsed * 0.4) * 0.15 + (Math.random() - 0.5) * shake,
-    camDist,
+    Math.sin(yaw) * Math.cos(pitch) * camDist + (Math.random() - 0.5) * shake,
+    Math.sin(pitch) * camDist + (Math.random() - 0.5) * shake,
+    focusZ + Math.cos(yaw) * Math.cos(pitch) * camDist,
   );
-  camera.lookAt((Math.random() - 0.5) * shake * 0.5, 0, 0);
+  camera.lookAt((Math.random() - 0.5) * shake * 0.5, 0, focusZ);
 
   // Uniforms.
   uDt.value = dt;
@@ -766,6 +879,8 @@ renderer.setAnimationLoop(() => {
   uWater.value = state.water;
   uMouseActive.value = state.mouseActive;
   uAssemble.value = Math.min(1, 0.08 + elapsed * elapsed * 0.35);
+  uDiorama.value = state.dio;
+  uUnfold.value = state.unfold;
   uSpawn.value = state.calm > 0 ? 0.00015 : 0.0009 + state.tantrum * 0.006;
   uSeed.value = (frame * 7919) % 1000003;
   uShift.value = 0.001 + state.tantrum * 0.005;
